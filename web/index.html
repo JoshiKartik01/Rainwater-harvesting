@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="A local rainwater harvesting and tank-management simulator.">
+  <title>RainWise | Smart Water Harvesting</title>
+  <link rel="stylesheet" href="style.css">
+  <script>
+    // Emscripten's generated water.js will use this global Module object.
+    var Module = {
+      onRuntimeInitialized: function () {
+        window.waterWasmReady = true;
+        document.dispatchEvent(new Event("water-wasm-ready"));
+      }
+    };
+  </script>
+  <!-- Generate this file by following README.md. The app has a JS fallback if it is absent. -->
+  <script src="water.js" onerror="console.info('water.js not found; using JavaScript fallback until WebAssembly is built.')"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="RainWise home">
+        <span class="brand-mark">≈</span>
+        <span>RainWise<span class="brand-sub">WATER INTELLIGENCE</span></span>
+      </a>
+      <div class="topbar-right">
+        <span class="status-dot"></span>
+        <span id="engine-status">Simulation mode</span>
+        <button id="reset-button" class="button button-quiet" type="button">Reset demo</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">CAMPUS & RESIDENTIAL WATER MANAGEMENT</p>
+          <h1>Every drop has<br><span>a purpose.</span></h1>
+          <p class="hero-copy">Simulate rainwater collection, monitor tank storage and understand where water is saved or lost — before investing in physical infrastructure.</p>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="sun"></div><div class="cloud cloud-one"></div><div class="cloud cloud-two"></div>
+          <div class="building"><div class="roof"></div><div class="windows"></div><div class="door"></div></div>
+          <div class="rain rain-one"></div><div class="rain rain-two"></div><div class="rain rain-three"></div>
+          <div class="tank-illustration"><span></span><i></i></div>
+        </div>
+      </section>
+
+      <section class="section-heading">
+        <div><p class="eyebrow">OVERVIEW</p><h2>System performance</h2></div>
+        <span id="simulation-label" class="pill">14-day demo scenario</span>
+      </section>
+
+      <section class="metric-grid" aria-label="Performance summary">
+        <article class="metric-card"><div class="metric-top"><span>Usable rainwater collected</span><span class="metric-icon blue">↓</span></div><strong id="metric-collected">—</strong><small>Total usable inflow</small></article>
+        <article class="metric-card"><div class="metric-top"><span>Water supplied</span><span class="metric-icon green">✓</span></div><strong id="metric-used">—</strong><small>Harvested water used</small></article>
+        <article class="metric-card"><div class="metric-top"><span>Overflow</span><span class="metric-icon orange">↗</span></div><strong id="metric-overflow">—</strong><small>Potential water loss</small></article>
+        <article class="metric-card"><div class="metric-top"><span>Demand coverage</span><span class="metric-icon purple">%</span></div><strong id="metric-coverage">—</strong><small>Demand met by harvested water</small></article>
+      </section>
+
+      <section class="main-grid">
+        <article class="panel tank-panel">
+          <div class="panel-heading"><div><p class="eyebrow">LIVE SIMULATION</p><h2>Storage tank</h2></div><span id="tank-status" class="pill pill-green">Healthy level</span></div>
+          <div class="tank-layout">
+            <div class="tank-visual-wrap">
+              <div class="tank-visual" role="img" aria-label="Illustration of water tank level">
+                <div id="tank-water" class="tank-water"></div>
+                <div class="tank-tick tick-100">100%</div><div class="tank-tick tick-50">50%</div><div class="tank-tick tick-0">0%</div>
+              </div>
+              <div class="tank-base"></div>
+            </div>
+            <div class="tank-details">
+              <p class="muted-label">Final storage</p><strong id="tank-litres" class="tank-big">—</strong>
+              <p id="tank-capacity-label" class="muted-text">of 20,000 L capacity</p>
+              <div class="progress-track"><div id="tank-progress" class="progress-fill"></div></div>
+              <div class="split-row"><span>Capacity used</span><strong id="tank-percent">—</strong></div>
+              <div class="split-row"><span>Free capacity</span><strong id="tank-free">—</strong></div>
+              <div class="split-row"><span>Unmet demand</span><strong id="tank-unmet">—</strong></div>
+            </div>
+          </div>
+          <div class="notice"><span class="notice-icon">i</span><p>This is a simulated tank level, not a real sensor reading. Overflow safety must be designed physically in a real installation.</p></div>
+        </article>
+
+        <article class="panel config-panel">
+          <div class="panel-heading"><div><p class="eyebrow">SCENARIO SETTINGS</p><h2>Building profile</h2></div></div>
+          <form id="config-form">
+            <div class="field-grid">
+              <label>Roof area (m²)<input id="roof-area" type="number" min="1" max="10000000" step="1" value="1000" required></label>
+              <label>Tank capacity (L)<input id="tank-capacity" type="number" min="1" max="100000000" step="100" value="20000" required></label>
+              <label>Runoff coefficient<input id="runoff-coefficient" type="number" min="0" max="1" step="0.01" value="0.8" required><small>Typical roof assumption: 0.8–0.95; verify locally.</small></label>
+              <label>Collection efficiency<input id="collection-efficiency" type="number" min="0" max="1" step="0.01" value="0.9" required><small>Additional efficiency after runoff coefficient.</small></label>
+              <label>Starting storage (L)<input id="starting-storage" type="number" min="0" step="100" value="5000" required></label>
+              <label>Daily demand (L)<input id="daily-demand" type="number" min="0" step="100" value="2500" required></label>
+              <label>Replacement water cost (₹/L)<input id="water-price" type="number" min="0" step="0.01" value="0.05" required></label>
+              <label>Simulation days<input id="simulation-days" type="number" min="1" max="365" step="1" value="14" required></label>
+            </div>
+            <label class="full-field">Daily rainfall (mm, comma-separated)
+              <textarea id="rainfall-series" rows="3" spellcheck="false">0, 5, 12, 0, 0, 18, 4, 0, 25, 0, 8, 0, 15, 2</textarea>
+              <small>One value per day. If fewer values than the selected days are supplied, the sequence repeats.</small>
+            </label>
+            <p id="form-error" class="form-error" role="alert"></p>
+            <div class="form-actions"><button class="button button-primary" type="submit">Run simulation <span>→</span></button><button id="sample-button" class="button button-outline" type="button">Load sample</button></div>
+          </form>
+        </article>
+      </section>
+
+
+      <section class="panel weather-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">LIVE WEATHER DATA</p><h2>Rainfall forecast</h2></div>
+          <span id="weather-status" class="pill">Not connected yet</span>
+        </div>
+        <p class="weather-intro">Fetch a daily rainfall forecast from Open-Meteo and use it as the rainfall input for your simulation. The default coordinates are for Dehradun; you can change them for another site.</p>
+        <div class="weather-controls">
+          <label>Latitude<input id="weather-lat" type="number" min="-90" max="90" step="0.0001" value="30.3165" required></label>
+          <label>Longitude<input id="weather-lon" type="number" min="-180" max="180" step="0.0001" value="78.0322" required></label>
+          <label>Forecast days<select id="weather-days"><option value="7" selected>7 days</option><option value="14">14 days</option><option value="16">16 days (maximum)</option></select></label>
+          <button id="fetch-weather" class="button button-primary" type="button">Fetch rainfall forecast <span>↗</span></button>
+        </div>
+        <p id="weather-message" class="weather-message" role="status">Your existing demo rainfall remains active until you fetch a forecast.</p>
+        <div id="weather-forecast" class="weather-forecast" aria-live="polite"></div>
+        <small class="weather-credit">Weather data: Open-Meteo. Forecasts can change and should not be treated as guaranteed rainfall.</small>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="panel-heading chart-heading"><div><p class="eyebrow">DAY-BY-DAY</p><h2>Rainfall & water balance</h2></div><div class="legend"><span><i class="legend-rain"></i> Rainfall</span><span><i class="legend-storage"></i> Stored water</span></div></div>
+        <div id="chart" class="chart" aria-label="Daily rainfall and ending storage chart"></div>
+        <div class="chart-foot"><span>Rainfall shown in mm</span><span>Storage shown in litres</span></div>
+      </section>
+
+      <section class="bottom-grid">
+        <article class="panel recommendations-panel">
+          <div class="panel-heading"><div><p class="eyebrow">DECISION SUPPORT</p><h2>System recommendations</h2></div><span class="sparkle">✦</span></div>
+          <div id="recommendations" class="recommendations"></div>
+        </article>
+        <article class="panel breakdown-panel">
+          <div class="panel-heading"><div><p class="eyebrow">RESOURCE ACCOUNTING</p><h2>Water balance</h2></div></div>
+          <div id="water-balance" class="balance-list"></div>
+          <div class="balance-note">All values are model estimates. Real performance depends on rainfall timing, first-flush losses, filtration, leakage, demand patterns and maintenance.</div>
+        </article>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-heading"><div><p class="eyebrow">SIMULATION LOG</p><h2>Daily results</h2></div><button id="export-button" class="button button-outline" type="button">Export CSV ↓</button></div>
+        <div class="table-scroll">
+          <table><thead><tr><th>Day</th><th>Rainfall</th><th>Usable inflow</th><th>Water used</th><th>Overflow</th><th>Unmet demand</th><th>Ending storage</th></tr></thead><tbody id="results-body"></tbody></table>
+        </div>
+      </section>
+
+      <footer><span class="footer-brand">RainWise</span><span>Educational simulation · Not a substitute for site engineering or water-quality testing</span></footer>
+    </main>
+  </div>
+</body>
+</html>
