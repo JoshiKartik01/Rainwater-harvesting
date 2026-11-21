@@ -9,6 +9,7 @@
   const litre = (n) => `${fmt(n)} L`;
   const DEMO_RAIN = "0, 5, 12, 0, 0, 18, 4, 0, 25, 0, 8, 0, 15, 2";
   let lastResult = null;
+  let rainfallSource = "Manual";
 
   function getNumber(id) {
     return Number($(id).value);
@@ -305,7 +306,7 @@
     const days = Number($("weather-days").value);
 
     if (!Number.isFinite(lat) || lat < -90 || lat > 90 ||
-        !Number.isFinite(lon) || lon < -180 || lon > 180) {
+      !Number.isFinite(lon) || lon < -180 || lon > 180) {
       message.textContent = "Enter a valid latitude (-90 to 90) and longitude (-180 to 180).";
       status.textContent = "Check coordinates";
       return;
@@ -330,7 +331,7 @@
       const dates = data?.daily?.time;
       const precipitation = data?.daily?.precipitation_sum;
       if (!Array.isArray(dates) || !Array.isArray(precipitation) || dates.length === 0 ||
-          dates.length !== precipitation.length) {
+        dates.length !== precipitation.length) {
         throw new Error("The weather service returned an unexpected response.");
       }
 
@@ -341,6 +342,7 @@
       $("rainfall-series").value = safeRainfall.map(v => Number(v.toFixed(1))).join(", ");
       $("simulation-days").value = String(safeRainfall.length);
       renderWeatherForecast(dates, safeRainfall);
+      rainfallSource = "Open-Meteo";
       runSimulation();
       status.textContent = "Forecast loaded";
       message.textContent = `Loaded ${safeRainfall.length} days of forecast rainfall. The simulation has been rerun using these values.`;
@@ -361,12 +363,115 @@
     render(simulate(config));
   }
 
+
+  function getLocalDateString(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+  }
+
+  async function saveSimulation() {
+    const button = $("save-button");
+    const status = $("save-status");
+
+    if (!lastResult) {
+      status.textContent = "Please run a simulation first.";
+      return;
+    }
+
+    const simulationName = $("simulation-name").value.trim();
+
+    if (!simulationName) {
+      status.textContent = "Please enter a simulation name.";
+      $("simulation-name").focus();
+      return;
+    }
+
+    button.disabled = true;
+    status.textContent = "Saving simulation to MySQL...";
+
+    try {
+      const result = lastResult;
+
+      const payload = {
+        simulation_name: simulationName,
+        start_date: getLocalDateString(),
+        rainfall_source: rainfallSource,
+
+        config: {
+          roofArea: result.config.roofArea,
+          capacity: result.config.capacity,
+          runoff: result.config.runoff,
+          efficiency: result.config.efficiency,
+          startStorage: result.config.startStorage,
+          dailyDemand: result.config.dailyDemand
+        },
+
+        rows: result.rows.map(row => ({
+          rainfall: row.rainfall,
+          potential: row.potential,
+          inflow: row.inflow,
+          used: row.used,
+          overflow: row.overflow,
+          demand: row.demand,
+          unmet: row.unmet,
+          startStorage: row.startStorage,
+          endingStorage: row.endingStorage
+        }))
+      };
+
+      const response = await fetch(
+        "http://localhost:5000/api/simulations",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        }
+      );
+
+      const responseText = await response.text();
+
+      console.log("HTTP Status:", response.status);
+      console.log("Server Response:", responseText);
+
+      let data;
+
+      try {
+        data = JSON.parse(responseText);
+      } catch (error) {
+        throw new Error("Server returned HTML instead of JSON. Check the browser console.");
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to save simulation.");
+      }
+
+      status.textContent =
+        `Successfully saved! Simulation ID: ${data.simulation_id}. ` +
+        `${data.total_days} daily records stored in MySQL.`;
+
+    } catch (error) {
+      console.error("Save simulation error:", error);
+
+      status.textContent =
+        `Could not save simulation: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+
   function loadSample() {
+    rainfallSource = "Manual";
     $("roof-area").value = 1000;
-    $("tank-capacity").value = 20000;
-    $("runoff-coefficient").value = 0.8;
+    $("tank-capacity").value = 10000;
+    $("runoff-coefficient").value = 0.85;
     $("collection-efficiency").value = 0.9;
-    $("starting-storage").value = 5000;
+    $("starting-storage").value = 2000;
     $("daily-demand").value = 2500;
     $("water-price").value = 0.05;
     $("simulation-days").value = 14;
@@ -397,11 +502,452 @@
   $("sample-button").addEventListener("click", loadSample);
   $("reset-button").addEventListener("click", loadSample);
   $("export-button").addEventListener("click", exportCsv);
+  $("save-button").addEventListener("click", saveSimulation);
   document.addEventListener("water-wasm-ready", () => {
     $("engine-status").textContent = "C / WebAssembly engine";
     if (lastResult) runSimulation();
   });
 
+  function formatHistoryDate(dateValue) {
+    if (!dateValue) return "—";
+
+    const date = new Date(dateValue);
+
+    if (Number.isNaN(date.getTime())) return "—";
+
+    return date.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric"
+    });
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, char => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[char]);
+  }
+
+  async function loadSimulationHistory() {
+    const status = $("history-status");
+    const list = $("history-list");
+    const button = $("refresh-history");
+
+    if (!status || !list) return;
+
+    if (button) button.disabled = true;
+
+    status.textContent = "Loading saved simulations...";
+
+    try {
+      const response = await fetch("http://localhost:5000/api/simulations");
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Could not load simulation history.");
+      }
+
+      if (!data.simulations || data.simulations.length === 0) {
+        status.textContent = "No saved simulations yet. Run and save a simulation first.";
+        list.innerHTML = "";
+        return;
+      }
+
+      status.textContent = `${data.count} saved simulation(s) found.`;
+
+      list.innerHTML = data.simulations.map(sim => `
+            <article class="history-card">
+                <div class="history-card-heading">
+                    <div>
+                        <h3>${escapeHtml(sim.simulation_name)}</h3>
+                        <p>Simulation #${Number(sim.simulation_id)} · ${escapeHtml(sim.building_name || "GEHU Academic Block")}</p>
+                    </div>
+
+                    <div class="history-actions">
+
+    <button class="button button-primary view-history-button"
+        type="button"
+        data-simulation-id="${Number(sim.simulation_id)}">
+        View Details
+    </button>
+
+    <button class="button button-outline export-history-button"
+        type="button"
+        data-simulation-id="${Number(sim.simulation_id)}">
+        Export PDF
+    </button>
+
+    <button class="button button-outline delete-history-button"
+        type="button"
+        data-simulation-id="${Number(sim.simulation_id)}">
+        Delete
+    </button>
+
+</div>
+</div>
+                </div>
+
+                <div class="history-stats">
+                    <div><span>Period</span><strong>${formatHistoryDate(sim.start_date)} – ${formatHistoryDate(sim.end_date)}</strong></div>
+                    <div><span>Total rainfall</span><strong>${Number(sim.total_rainfall_mm).toLocaleString("en-IN")} mm</strong></div>
+                    <div><span>Water collected</span><strong>${Number(sim.total_collected_l).toLocaleString("en-IN")} L</strong></div>
+                    <div><span>Water used</span><strong>${Number(sim.total_water_used_l).toLocaleString("en-IN")} L</strong></div>
+                    <div><span>Overflow</span><strong>${Number(sim.total_overflow_l).toLocaleString("en-IN")} L</strong></div>
+                    <div><span>Final storage</span><strong>${Number(sim.final_storage_l).toLocaleString("en-IN")} L</strong></div>
+                </div>
+
+                <div class="history-details" id="history-details-${Number(sim.simulation_id)}" hidden></div>
+            </article>
+        `).join("");
+
+    } catch (error) {
+      console.error("History loading error:", error);
+      status.textContent = `Could not load history: ${error.message}`;
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function viewSimulationDetails(simulationId) {
+    const container = $(`history-details-${simulationId}`);
+
+    if (!container) return;
+
+    if (!container.hidden) {
+      container.hidden = true;
+      return;
+    }
+
+    container.hidden = false;
+    container.innerHTML = "<p>Loading daily results...</p>";
+
+    try {
+      const response = await fetch(`http://localhost:5000/api/simulations/${simulationId}`);
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Could not load simulation details.");
+      }
+
+      const rows = data.daily_results || [];
+
+      container.innerHTML = `
+            <h4>Daily Results</h4>
+
+            <div class="history-table-wrap">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Rainfall (mm)</th>
+                            <th>Collected (L)</th>
+                            <th>Used (L)</th>
+                            <th>Overflow (L)</th>
+                            <th>Closing storage (L)</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${rows.map(row => `
+                            <tr>
+                                <td>${formatHistoryDate(row.result_date)}</td>
+                                <td>${Number(row.rainfall_mm).toLocaleString("en-IN")}</td>
+                                <td>${Number(row.collected_l).toLocaleString("en-IN")}</td>
+                                <td>${Number(row.water_used_l).toLocaleString("en-IN")}</td>
+                                <td>${Number(row.overflow_l).toLocaleString("en-IN")}</td>
+                                <td>${Number(row.closing_storage_l).toLocaleString("en-IN")}</td>
+                            </tr>
+                        `).join("")}
+                    </tbody>
+                </table>
+            </div>
+        `;
+
+    } catch (error) {
+      console.error("Details loading error:", error);
+      container.innerHTML = `<p>Could not load details: ${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  async function deleteSimulation(simulationId) {
+    const confirmed = confirm(
+      "Are you sure you want to delete this simulation? Its daily records will also be deleted permanently."
+    );
+
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/simulations/${simulationId}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Could not delete simulation.");
+      }
+
+      alert("Simulation deleted successfully!");
+
+      await loadSimulationHistory();
+
+    } catch (error) {
+      console.error("Delete simulation error:", error);
+      alert(`Error: ${error.message}`);
+    }
+  }
+
+  // Export Simulation as PDF
+  async function exportSimulationPDF(simulationId) {
+    // Open the print window immediately to avoid popup blocking
+    const printWindow = window.open("", "_blank");
+
+    if (!printWindow) {
+      alert("Please allow popups for this website to export the PDF.");
+      return;
+    }
+
+    printWindow.document.write("<h2>Preparing RainWise report...</h2>");
+
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/simulations/${simulationId}`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Could not load simulation.");
+      }
+
+      const sim = data.simulation || data.summary || data;
+      const rows = data.daily_results || [];
+
+      const dailyRows = rows.map(row => `
+            <tr>
+                <td>${formatHistoryDate(row.result_date)}</td>
+                <td>${Number(row.rainfall_mm).toLocaleString("en-IN")}</td>
+                <td>${Number(row.collected_l).toLocaleString("en-IN")}</td>
+                <td>${Number(row.water_used_l).toLocaleString("en-IN")}</td>
+                <td>${Number(row.overflow_l).toLocaleString("en-IN")}</td>
+                <td>${Number(row.closing_storage_l).toLocaleString("en-IN")}</td>
+            </tr>
+        `).join("");
+
+      printWindow.document.open();
+
+      printWindow.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>RainWise Simulation Report</title>
+
+                <style>
+                    body {
+                        font-family: Arial, sans-serif;
+                        padding: 30px;
+                        color: #222;
+                    }
+
+                    h1 {
+                        color: #176b55;
+                        margin-bottom: 5px;
+                    }
+
+                    h2 {
+                        margin-top: 28px;
+                        border-bottom: 2px solid #176b55;
+                        padding-bottom: 8px;
+                    }
+
+                    .subtitle {
+                        color: #666;
+                    }
+
+                    .summary {
+                        display: grid;
+                        grid-template-columns: repeat(2, 1fr);
+                        gap: 12px;
+                        margin-top: 20px;
+                    }
+
+                    .item {
+                        border: 1px solid #ddd;
+                        padding: 12px;
+                        border-radius: 6px;
+                    }
+
+                    .item span {
+                        display: block;
+                        color: #666;
+                        font-size: 12px;
+                        margin-bottom: 6px;
+                    }
+
+                    .item strong {
+                        font-size: 16px;
+                    }
+
+                    table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin-top: 15px;
+                        font-size: 11px;
+                    }
+
+                    th, td {
+                        border: 1px solid #ccc;
+                        padding: 8px 5px;
+                        text-align: center;
+                    }
+
+                    th {
+                        background: #e8f3ef;
+                    }
+
+                    @media print {
+                        body {
+                            padding: 10px;
+                        }
+
+                        button {
+                            display: none;
+                        }
+                    }
+                </style>
+            </head>
+
+            <body>
+                <h1>RainWise</h1>
+                <p class="subtitle">
+                    Smart Rainwater Harvesting & Management System
+                </p>
+
+                <h2>Simulation Report</h2>
+
+                <p><strong>Simulation:</strong>
+                    ${escapeHtml(sim.simulation_name || "Rainwater Simulation")}
+                </p>
+
+                <p><strong>Building:</strong>
+                    ${escapeHtml(sim.building_name || "GEHU Academic Block")}
+                </p>
+
+                <p><strong>Tank:</strong>
+                    ${escapeHtml(sim.tank_name || "Main Rainwater Tank")}
+                </p>
+
+                <p><strong>Period:</strong>
+                    ${formatHistoryDate(sim.start_date)} –
+                    ${formatHistoryDate(sim.end_date)}
+                </p>
+
+                <h2>Simulation Summary</h2>
+
+                <div class="summary">
+                    <div class="item">
+                        <span>Total Rainfall</span>
+                        <strong>${Number(sim.total_rainfall_mm).toLocaleString("en-IN")} mm</strong>
+                    </div>
+
+                    <div class="item">
+                        <span>Water Collected</span>
+                        <strong>${Number(sim.total_collected_l).toLocaleString("en-IN")} L</strong>
+                    </div>
+
+                    <div class="item">
+                        <span>Water Used</span>
+                        <strong>${Number(sim.total_water_used_l).toLocaleString("en-IN")} L</strong>
+                    </div>
+
+                    <div class="item">
+                        <span>Overflow</span>
+                        <strong>${Number(sim.total_overflow_l).toLocaleString("en-IN")} L</strong>
+                    </div>
+
+                    <div class="item">
+                        <span>Unmet Demand</span>
+                        <strong>${Number(sim.unmet_demand_l).toLocaleString("en-IN")} L</strong>
+                    </div>
+
+                    <div class="item">
+                        <span>Final Tank Storage</span>
+                        <strong>${Number(sim.final_storage_l).toLocaleString("en-IN")} L</strong>
+                    </div>
+                </div>
+
+                <h2>Daily Simulation Results</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Rainfall (mm)</th>
+                            <th>Collected (L)</th>
+                            <th>Used (L)</th>
+                            <th>Overflow (L)</th>
+                            <th>Closing Storage (L)</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${dailyRows}
+                    </tbody>
+                </table>
+
+                <p style="margin-top:30px; font-size:11px; color:#777;">
+                    Generated by RainWise Smart Rainwater Harvesting System.
+                </p>
+
+                <button onclick="window.print()">Print / Save as PDF</button>
+            </body>
+            </html>
+        `);
+
+      printWindow.document.close();
+      printWindow.focus();
+
+    } catch (error) {
+      console.error("PDF export error:", error);
+      printWindow.document.body.innerHTML =
+        `<h2>Could not generate report</h2><p>${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  if ($("refresh-history")) {
+    $("refresh-history").addEventListener("click", loadSimulationHistory);
+  }
+
+  if ($("history-list")) {
+    $("history-list").addEventListener("click", event => {
+
+      const viewButton = event.target.closest(".view-history-button");
+      const deleteButton = event.target.closest(".delete-history-button");
+      const exportButton = event.target.closest(".export-history-button");
+
+      if (viewButton) {
+        viewSimulationDetails(Number(viewButton.dataset.simulationId));
+      }
+
+      if (deleteButton) {
+        deleteSimulation(Number(deleteButton.dataset.simulationId));
+      }
+
+      if (exportButton) {
+        exportSimulationPDF(Number(exportButton.dataset.simulationId));
+      }
+
+    });
+  }
+
+  loadSimulationHistory();
   // Initial dashboard demo.
   runSimulation();
 })();
